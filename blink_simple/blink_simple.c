@@ -4,10 +4,12 @@
 #define LED_1   (7)
 #define LED_2   (8)
 
+// test
+
 int all_leds[] = {LED_1, LED_2};
 
 #ifndef LED_DELAY_MS
-#define LED_DELAY_MS 500
+#define LED_DELAY_MS 1500
 #endif
 
 int pico_leds_init(void)
