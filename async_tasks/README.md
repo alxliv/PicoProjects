@@ -1,6 +1,7 @@
 # MCU Async Task Infrastructure
 
-A lightweight, pure C implementation of a cooperative multitasking scheduler for microcontroller (Arduino, Pico, ESP32, STM32, etc..) projects.
+A lightweight, pure C implementation of a cooperative multitasking scheduler mostly suited for microcontrollers such as Arduino, Raspberry Pi Pico, ESP32, STM32, and similar.
+
 
 ## Features
 
@@ -14,9 +15,9 @@ A lightweight, pure C implementation of a cooperative multitasking scheduler for
 
 ### Core Components
 
-1. **Task Structure**: Contains timing information, callback pointer, user data, and `next` pointer
+1. **Task Structure**: Contains timing information, callback pointer and `next` pointer
 2. **TaskList**: Simple linked list with a `head` pointer to the first task
-3. **Update() Function**: Global function called from `loop()` to traverse and process all active tasks
+3. **Update() Function**: Global function called from the program's main loop (or `while(1)` on non-Arduino platforms) to traverse and process all active tasks
 
 ### How It Works
 
@@ -33,8 +34,7 @@ A lightweight, pure C implementation of a cooperative multitasking scheduler for
 
 - `async_task.h` - Header file with Task structure and TaskList
 - `async_task.c` - Implementation of the task list and Update() function
-- `async_led_demo.ino` - Example sketch with 2 LEDs blinking at different rates
-- `advanced_callback_demo.ino` - Advanced example showing dynamic callback switching
+- `async_tasks_example.c` - Example Raspberry Pi Pico (C SDK) code to blink two LEDs at different rates
 
 ## Usage
 
@@ -44,34 +44,56 @@ A lightweight, pure C implementation of a cooperative multitasking scheduler for
 #include "async_task.h"
 
 TaskList ActiveTasksList;
-Task my_task;
+typedef struct
+{
+    Task task;
+    int pin;
+    bool state;
+} led_t;
 
-void setup() {
-    // Initialize the task list
-    TaskList_Init(&ActiveTasksList);
-    
-    // Configure and add task
-    my_task.callback = my_callback;
-    my_task.interval = 1000;
-    my_task.user_data = NULL;
-    my_task.next = NULL;
-    TaskList_Add(&ActiveTasksList, &my_task);
-}
-
-void loop() {
-    // Update all tasks - call every 1ms ideally (or as fast as possible)
-    Update(&ActiveTasksList);
-}
-
-void my_callback(Task* task) {
-    // Your code here - runs every 1000ms
-    
+static void led_callback(Task* task) {
+    // Your code here - runs every task->interval;
     // To change behavior:
     // task->callback = another_callback;
-    
     // To change interval:
     // task->interval = 2000;
+    led_t *d = (led_t *)task;
+    d->state = !d->state;
+    d->state ? led_on(d->pin):led_off(d->pin);
 }
+
+static void init_led(led_t* led, uint32_t pin, uint32_t interval, TaskCallback callbk)
+{
+    led->task.callback = callbk;
+    led->task.interval = interval;
+    led->pin = pin;
+    led->state = false;
+}
+
+int main()
+{
+    stdio_init_all();
+    int rc = pico_leds_init();
+    hard_assert(rc == PICO_OK);
+
+    TaskList_Init(&ActiveTasksList);
+
+    led_t led1;
+    init_led(&led1, LED_1, 600, led_callback);
+    led_t led2;
+    init_led(&led2, LED_2, 250, led_callback);
+
+    TaskList_Add(&ActiveTasksList, (Task *)&led1);
+    TaskList_Add(&ActiveTasksList, (Task *)&led2);
+
+    while (true) {
+        Update(&ActiveTasksList);
+        sleep_ms(5);
+
+    }
+}
+
+
 ```
 
 ### Controlling Tasks
@@ -90,21 +112,6 @@ my_task.callback = different_callback;
 my_task.interval = 2000;  // Now runs every 2 seconds
 ```
 
-### LED Example
-
-The demo shows two LEDs:
-- **LED1** (Pin 13): Blinks every 500ms (2 times per second)
-- **LED2** (Pin 12): Blinks every 1500ms (once every 1.5 seconds)
-
-Both LEDs run independently without blocking the main loop!
-
-## Installation
-
-1. Create a new Arduino sketch folder
-2. Copy `async_task.h`, `async_task.c`, and `async_led_demo.ino` into the folder
-3. Open the `.ino` file in Arduino IDE
-4. Upload to your Arduino board
-
 ## API Reference
 
 ### Functions
@@ -112,72 +119,41 @@ Both LEDs run independently without blocking the main loop!
 - `void TaskList_Init(TaskList* list)` - Initialize the task list
 - `void TaskList_Add(TaskList* list, Task* task)` - Add a task to the active list
 - `void TaskList_Remove(TaskList* list, Task* task)` - Remove a task from the active list
-- `void Update(TaskList* list)` - Update all active tasks (call from loop() every 1ms ideally)
+- `void Update(TaskList* list)` - Update all active tasks (call from your main loop — ideally every 1 ms)
 
-### Task Setup
-
-```c
-// Declare task
-Task my_task;
-
-// Configure task
-my_task.callback = my_callback_function;
-my_task.interval = 1000;  // milliseconds
-my_task.user_data = &my_data;  // optional
-my_task.next = NULL;  // must be NULL before adding to list
-
-// Add to active list
-TaskList_Add(&ActiveTasksList, &my_task);
-```
-
-### Task Callback Signature
-
-```c
-void my_callback(Task* task) {
-    // Access user data if needed
-    MyData* data = (MyData*)task->user_data;
-    
-    // Do work here
-    
-    // Can modify task behavior:
-    // task->callback = other_callback; // Switch behavior
-    // task->interval = 2000;           // Change timing
-    // TaskList_Remove(&ActiveTasksList, task); // Stop task
-}
-```
-
-## Advantages
-
-- **Non-blocking**: No `delay()` calls needed
-- **Simple**: Just a linked list - minimal code
-- **No limits**: Add as many tasks as you have memory for
-- **Flexible**: Tasks can change behavior by switching callbacks
-- **User-controlled allocation**: Tasks can be static, global, or dynamic
-- **Direct access**: No indirection - you own the Task structs
-- **Scalable**: Add multiple tasks easily
-- **Maintainable**: Each task is self-contained
-- **Efficient**: Tasks only run when needed
-- **Lightweight**: Minimal overhead and memory usage
-
-## Limitations
-
-- Cooperative only (tasks must return quickly)
-- Millisecond precision (uses `millis()`)
-- No priority system
-- Tasks limited only by available memory
 
 ## Tips
 
-1. Keep callbacks short and fast
-2. Don't use `delay()` inside callbacks
-3. Use task->user_data for task-specific state
-4. Tasks share CPU time cooperatively
-5. Call `Update()` as frequently as possible (ideally every 1ms)
-6. Use `TaskList_Remove()` to temporarily stop a task
-7. Change callbacks to switch task behavior dynamically
-8. Modify `task->interval` to adjust timing on the fly
-9. Allocate tasks statically for predictable memory usage
+- Keep callbacks short and fast — they should not block for long periods.
+- Avoid blocking calls (like `delay()`/`sleep_ms()`) inside callbacks; yield quickly.
+- Use `Task` as the first member of your custom state struct so a `Task*` can be cast back to your type in callbacks.
 
-## License
+Example (pattern for user state types):
+```c
+typedef struct {
+    Task task; // Task must be first member
+    int pin;
+    bool state;
+} led_t;
 
-Free to use and modify for any purpose.
+static void led_callback(Task* task) {
+    led_t *d = (led_t *)task; // cast back to your type
+    d->state = !d->state;
+    d->state ? led_on(d->pin) : led_off(d->pin);
+}
+
+// in main()
+led_t led;
+led.task.callback = led_callback;
+led.pin = 7;
+led.state = false;
+led.task.interval = 1000;
+TaskList_Add(&ActiveTasksList, (Task *)&led);
+```
+
+- Tasks share CPU time cooperatively; keep callbacks short.
+- Call `Update()` as frequently as practical (ideally every 1 ms) to meet timing expectations.
+- Use `TaskList_Remove()` to temporarily stop a task and `TaskList_Add()` to restart it.
+- Change `task->callback` or `task->interval` at runtime to switch behavior.
+- Prefer statically allocated tasks for predictable memory usage on constrained devices.
+

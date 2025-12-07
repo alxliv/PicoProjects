@@ -11,11 +11,10 @@ typedef void (*TaskCallback)(Task *task);
 
 // Task structure with linked list pointer
 typedef struct Task {
+    struct Task* next;      // Next task in the list
     uint32_t last_run;      // Last execution time in milliseconds
     uint32_t interval;      // Interval between executions in milliseconds
     TaskCallback callback; // Function to call (NULL = not active)
-    void* user_data;        // User data pointer for task-specific variables
-    struct Task* next;      // Next task in the list
 } Task;
 
 // Active tasks list (linked list)
