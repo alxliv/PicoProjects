@@ -1,0 +1,14 @@
+build
+!.vscode/*
+*.dll
+*.lib
+*.o
+*.bat
+*.exe
+*.a
+*.txt
+*.chm
+*.bin
+LinuxDriver*
+ApiExample*
+*.cmake
