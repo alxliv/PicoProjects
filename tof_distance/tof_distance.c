@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
 #include "vl53l0x_api.h"
@@ -6,6 +7,8 @@
 #include "vl53l0x_i2c_platform.h"
 
 // Details of time-of-flight ranging sensor VL53L0X and its API are from https://www.st.com/en/imaging-and-photonics-solutions/vl53l0x.html
+// Details of carrier/breakout board from Pololu: https://www.pololu.com/product/2490
+// See also https://github.com/pololu/vl53l0x-arduino
 
 
 static VL53L0X_Dev_t tofDev;
@@ -57,6 +60,32 @@ void i2c_scan(i2c_inst_t *i2c)
     printf("Scan complete.\n");
 }
 
+VL53L0X_Error WaitMeasurementDataReady(VL53L0X_DEV Dev) {
+    VL53L0X_Error Status = VL53L0X_ERROR_NONE;
+    uint8_t NewDatReady=0;
+    uint32_t LoopNb;
+
+    // Wait until it finished
+    // use timeout to avoid deadlock
+    if (Status == VL53L0X_ERROR_NONE) {
+        LoopNb = 0;
+        do {
+            Status = VL53L0X_GetMeasurementDataReady(Dev, &NewDatReady);
+            if ((NewDatReady == 0x01) || Status != VL53L0X_ERROR_NONE) {
+                break;
+            }
+            LoopNb = LoopNb + 1;
+            VL53L0X_PollingDelay(Dev);
+        } while (LoopNb < VL53L0X_DEFAULT_MAX_LOOP);
+
+        if (LoopNb >= VL53L0X_DEFAULT_MAX_LOOP) {
+            Status = VL53L0X_ERROR_TIME_OUT;
+        }
+    }
+
+    return Status;
+}
+
 int main()
 {
     int rc = 0;
@@ -78,6 +107,12 @@ int main()
 
     i2c_scan(i2c0);
 
+    uint8_t model_id = 0;
+    rc = VL53L0X_RdByte(ptof, VL53L0X_REG_IDENTIFICATION_MODEL_ID, &model_id);
+    hard_assert(rc == 0);
+    printf("device model: 0x%02x\n", model_id);
+    hard_assert(model_id == 0xEE);
+
     uint8_t rev=0;
     rc = VL53L0X_RdByte(ptof, VL53L0X_REG_IDENTIFICATION_REVISION_ID, &rev);
     printf("VL53L0X_RdByte rc=%d rev=0x%02x\n", rc, rev);
@@ -90,14 +125,48 @@ int main()
     printf("DeviceInfo: Name=%s,Type=%s, ProductId=%s\n", di.Name, di.Type, di.ProductId);
     printf("ProductType=%d\n", di.ProductType);
 
- //   rc = VL53L0X_DataInit(ptof);
- //   hard_assert(rc == 0);
+    rc = VL53L0X_DataInit(ptof);
+    hard_assert(rc == 0);
 
-    // uint8_t VhvSettings=0;
-    // uint8_t PhaseCal=0;
-    // rc = VL53L0X_PerformRefCalibration(ptof, &VhvSettings, &PhaseCal);
-    // hard_assert(rc == 0);
+    // Device initialization
+    rc = VL53L0X_StaticInit(ptof);
+    hard_assert(rc==0);
 
+    uint32_t refSpadCount;
+    uint8_t isApertureSpads;
+    uint8_t VhvSettings;
+    uint8_t PhaseCal;
+
+    // Calibration
+    rc = VL53L0X_PerformRefCalibration(ptof, &VhvSettings, &PhaseCal); // Device Initialization
+    hard_assert(rc==0);
+
+    rc = VL53L0X_PerformRefSpadManagement(ptof, &refSpadCount, &isApertureSpads);
+    hard_assert(rc==0);
+    rc = VL53L0X_SetDeviceMode(ptof, VL53L0X_DEVICEMODE_CONTINUOUS_RANGING); // Setup in single ranging mode
+    hard_assert(rc==0);
+    rc = VL53L0X_StartMeasurement(ptof);
+
+    uint32_t no_of_measurements = 32;
+    uint16_t* pResults = (uint16_t*)malloc(sizeof(uint16_t) * no_of_measurements);
+
+    for (uint32_t i=0; i<no_of_measurements; i++)
+    {
+        VL53L0X_RangingMeasurementData_t RangingMeasurementData;
+        rc = WaitMeasurementDataReady(ptof);
+        if (rc!=0)
+            break;
+        VL53L0X_GetRangingMeasurementData(ptof, &RangingMeasurementData);
+        *(pResults + i) = RangingMeasurementData.RangeMilliMeter;
+        printf("[%d] measurement: %d mm\n", i,  RangingMeasurementData.RangeMilliMeter);
+
+        // Clear the interrupt
+        VL53L0X_ClearInterruptMask(ptof, VL53L0X_REG_SYSTEM_INTERRUPT_GPIO_NEW_SAMPLE_READY);
+        VL53L0X_PollingDelay(ptof);
+
+    }
+
+    free(pResults);
 
     int counter = 0;
     while (true) {
