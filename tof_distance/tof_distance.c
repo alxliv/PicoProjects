@@ -156,7 +156,7 @@ static void range_task_callback(Task* task) {
     VL53L0X_Error status = VL53L0X_ERROR_NONE;
 
     status = VL53L0X_GetMeasurementDataReady(rt->dev, &new_data_ready);
-    if ((status!=VL53L0X_ERROR_NONE)||(new_data_ready==0))
+   if ((status!=VL53L0X_ERROR_NONE)||(new_data_ready==0))
     {
         rt->valid = false;
         return;
@@ -189,6 +189,30 @@ static void printDistance_callback(Task* task) {
     }
 }
 
+typedef struct
+{
+    Task task;
+    led_t *red_led;
+    uint32_t previous_ts;
+    range_task_t *range;
+} manager_task_t;
+
+static inline uint32_t range_to_interval_ms(uint32_t range_mm) {
+    if (range_mm < 30) range_mm = 30;
+    if (range_mm > 3000) range_mm = 3000;
+    return 50 + (uint32_t)((uint64_t)(range_mm - 30) * (2000 - 50) / (3000 - 30));
+}
+
+static void manager_callback(Task* task) {
+    manager_task_t* mngr = (manager_task_t *)task;
+    VL53L0X_RangingMeasurementData_t *data = &mngr->range->valid_data;
+
+    if (data->TimeStamp != mngr->previous_ts) {
+        mngr->previous_ts = data->TimeStamp;
+        mngr->red_led->task.interval = range_to_interval_ms(data->RangeMilliMeter);
+    }
+}
+
 int main()
 {
     int rc = 0;
@@ -201,7 +225,7 @@ int main()
     led_t led1;
     init_led_task(&led1, LED_GREEN, 500, led_callback);
     led_t led2;
-    init_led_task(&led2, LED_RED, 50, NULL);
+    init_led_task(&led2, LED_RED, 5000, led_callback);
     TaskList_Add(&ActiveTasksList, (Task *)&led1);
     TaskList_Add(&ActiveTasksList, (Task *)&led2);
 
@@ -299,7 +323,14 @@ int main()
     printDistance.range = &rangeTask;
     TaskList_Add(&ActiveTasksList, (Task *)&printDistance);
 
-    int counter = 0;
+    manager_task_t managerTask;
+    managerTask.range = &rangeTask;
+    managerTask.red_led = &led2;
+    managerTask.task.callback = manager_callback;
+    managerTask.task.interval = 0;
+    managerTask.previous_ts = 0;
+    TaskList_Add(&ActiveTasksList, (Task *)&managerTask);
+
     while (true) {
         Update(&ActiveTasksList);
         sleep_ms(1);
