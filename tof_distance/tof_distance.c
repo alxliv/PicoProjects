@@ -59,7 +59,7 @@ void i2c_scan(i2c_inst_t *i2c)
     // }
     printf("Scan complete.\n");
 }
-
+#if 0
 VL53L0X_Error WaitMeasurementDataReady(VL53L0X_DEV Dev) {
     VL53L0X_Error Status = VL53L0X_ERROR_NONE;
     uint8_t NewDatReady=0;
@@ -85,6 +85,8 @@ VL53L0X_Error WaitMeasurementDataReady(VL53L0X_DEV Dev) {
 
     return Status;
 }
+#endif
+
 #define LED_1   (7)
 #define LED_2   (8)
 #define LED_RED     (LED_1)
@@ -143,6 +145,8 @@ typedef struct {
     VL53L0X_Dev_t *dev;
     VL53L0X_RangingMeasurementData_t valid_data;
     uint32_t start_ms;
+    uint32_t last_valid_ms;
+    uint32_t latency;
     bool valid;
 } range_task_t;
 
@@ -158,8 +162,13 @@ static void range_task_callback(Task* task) {
         return;
     }
     VL53L0X_GetRangingMeasurementData(rt->dev, &rt->valid_data);
-    rt->valid_data.TimeStamp = millis() - rt->start_ms;
+    uint32_t ms = millis();
+    rt->latency = ms - rt->last_valid_ms;
+    rt->last_valid_ms = ms;
+    rt->valid_data.TimeStamp = ms - rt->start_ms;
     rt->valid = true;
+    VL53L0X_ClearInterruptMask(rt->dev, VL53L0X_REG_SYSTEM_INTERRUPT_GPIO_NEW_SAMPLE_READY);
+
 }
 
 typedef struct
@@ -175,7 +184,7 @@ static void printDistance_callback(Task* task) {
     VL53L0X_RangingMeasurementData_t *data = &ps->range->valid_data;
 
     if (ps->prev_range_time_stamp != data->TimeStamp) {
-        printf("[%d ms]: D=%d mm\n", data->TimeStamp, data->RangeMilliMeter);
+        printf("[%d ms]: latency=%d ms, D=%d mm\n", data->TimeStamp, ps->range->latency, data->RangeMilliMeter);
         ps->prev_range_time_stamp = data->TimeStamp;
     }
 }
@@ -280,6 +289,7 @@ int main()
     rangeTask.task.interval = 0;
     rangeTask.dev = ptof;
     rangeTask.start_ms = millis();
+    rangeTask.latency = 0;
     rangeTask.valid_data.TimeStamp = 0;
     TaskList_Add(&ActiveTasksList, (Task *)&rangeTask);
 
