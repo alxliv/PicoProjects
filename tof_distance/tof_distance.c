@@ -5,11 +5,11 @@
 #include "vl53l0x_api.h"
 #include "vl53l0x_platform.h"
 #include "vl53l0x_i2c_platform.h"
+#include "async_task.h"
 
 // Details of time-of-flight ranging sensor VL53L0X and its API are from https://www.st.com/en/imaging-and-photonics-solutions/vl53l0x.html
 // Details of carrier/breakout board from Pololu: https://www.pololu.com/product/2490
 // See also https://github.com/pololu/vl53l0x-arduino
-
 
 static VL53L0X_Dev_t tofDev;
 
@@ -85,10 +85,116 @@ VL53L0X_Error WaitMeasurementDataReady(VL53L0X_DEV Dev) {
 
     return Status;
 }
+#define LED_1   (7)
+#define LED_2   (8)
+#define LED_RED     (LED_1)
+#define LED_GREEN   (LED_2)
+
+int all_leds[] = {LED_1, LED_2};
+
+int pico_leds_init()
+{
+    int n = sizeof(all_leds)/sizeof(int);
+    for (int i=0; i<n; i++)
+    {
+        gpio_init(all_leds[i]);
+        gpio_set_dir(all_leds[i], GPIO_OUT);
+    }
+    return PICO_OK;
+}
+
+#define led_on(pin)  do { gpio_put((pin), true); } while (0)
+#define led_off(pin) do { gpio_put((pin), false); } while (0)
+
+TaskList ActiveTasksList;
+
+typedef struct
+{
+    Task task;
+    int pin;
+    bool state;
+} led_t;
+
+static void led_callback(Task* task) {
+    // Your code here - runs every task->interval;
+    // To change behavior:
+    // task->callback = another_callback;
+    // To change interval:
+    // task->interval = 2000;
+    led_t *d = (led_t *)task;
+    d->state = !d->state;
+    if (d->state)
+        led_on(d->pin);
+    else
+        led_off(d->pin);
+}
+
+static void init_led_task(led_t* led, uint32_t pin, uint32_t interval, TaskCallback callbk)
+{
+    led->task.callback = callbk;
+    led->task.interval = interval;
+    led->pin = pin;
+    led->state = false;
+}
+
+// Time-of-Flight range sensor task
+typedef struct {
+    Task task;
+    VL53L0X_Dev_t *dev;
+    VL53L0X_RangingMeasurementData_t valid_data;
+    uint32_t start_ms;
+    bool valid;
+} range_task_t;
+
+static void range_task_callback(Task* task) {
+    range_task_t* rt = (range_task_t *)task;
+    uint8_t new_data_ready=0;
+    VL53L0X_Error status = VL53L0X_ERROR_NONE;
+
+    status = VL53L0X_GetMeasurementDataReady(rt->dev, &new_data_ready);
+    if ((status!=VL53L0X_ERROR_NONE)||(new_data_ready==0))
+    {
+        rt->valid = false;
+        return;
+    }
+    VL53L0X_GetRangingMeasurementData(rt->dev, &rt->valid_data);
+    rt->valid_data.TimeStamp = millis() - rt->start_ms;
+    rt->valid = true;
+}
+
+typedef struct
+{
+    Task task;
+    uint32_t prev_range_time_stamp;
+    range_task_t *range;
+} print_task_t;
+
+
+static void printDistance_callback(Task* task) {
+    print_task_t* ps = (print_task_t *)task;
+    VL53L0X_RangingMeasurementData_t *data = &ps->range->valid_data;
+
+    if (ps->prev_range_time_stamp != data->TimeStamp) {
+        printf("[%d ms]: D=%d mm\n", data->TimeStamp, data->RangeMilliMeter);
+        ps->prev_range_time_stamp = data->TimeStamp;
+    }
+}
 
 int main()
 {
     int rc = 0;
+
+    TaskList_Init(&ActiveTasksList);
+
+    rc = pico_leds_init();
+    hard_assert(rc == PICO_OK);
+
+    led_t led1;
+    init_led_task(&led1, LED_GREEN, 500, led_callback);
+    led_t led2;
+    init_led_task(&led2, LED_RED, 50, NULL);
+    TaskList_Add(&ActiveTasksList, (Task *)&led1);
+    TaskList_Add(&ActiveTasksList, (Task *)&led2);
 
     VL53L0X_Dev_t *ptof = &tofDev;
     VL53L0X_Error tof_status = VL53L0X_ERROR_NONE;
@@ -147,6 +253,7 @@ int main()
     hard_assert(rc==0);
     rc = VL53L0X_StartMeasurement(ptof);
 
+#if 0
     uint32_t no_of_measurements = 32;
     uint16_t* pResults = (uint16_t*)malloc(sizeof(uint16_t) * no_of_measurements);
 
@@ -165,13 +272,26 @@ int main()
         VL53L0X_PollingDelay(ptof);
 
     }
-
     free(pResults);
+#endif
+
+    range_task_t rangeTask;
+    rangeTask.task.callback = range_task_callback;
+    rangeTask.task.interval = 0;
+    rangeTask.dev = ptof;
+    rangeTask.start_ms = millis();
+    rangeTask.valid_data.TimeStamp = 0;
+    TaskList_Add(&ActiveTasksList, (Task *)&rangeTask);
+
+    print_task_t printDistance;
+    printDistance.task.callback = printDistance_callback;
+    printDistance.task.interval = 1000;
+    printDistance.range = &rangeTask;
+    TaskList_Add(&ActiveTasksList, (Task *)&printDistance);
 
     int counter = 0;
     while (true) {
-        counter++;
-        printf("Loop: #%d\n", counter);
-        sleep_ms(1000);
+        Update(&ActiveTasksList);
+        sleep_ms(1);
     }
 }
