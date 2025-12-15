@@ -15,14 +15,17 @@ uint32_t millis()
 
 // Add a task to the active tasks list
 void TaskList_Add(TaskList* list, Task* task) {
-    if (task == NULL || task->callback == NULL) {
+    if (task == NULL)
+    {
         return; // Invalid task
     }
 
     // Check if task is already in the list
     Task* current = list->head;
-    while (current != NULL) {
-        if (current == task) {
+    while (current != NULL)
+    {
+        if (current == task)
+        {
             return; // Already in list
         }
         current = current->next;

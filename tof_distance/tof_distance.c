@@ -117,7 +117,7 @@ typedef struct
     bool state;
 } led_t;
 
-static void led_callback(Task* task) {
+static void led_blink_callback(Task* task) {
     // Your code here - runs every task->interval;
     // To change behavior:
     // task->callback = another_callback;
@@ -139,6 +139,21 @@ static void init_led_task(led_t* led, uint32_t pin, uint32_t interval, TaskCallb
     led->state = false;
 }
 
+static inline void led_task_blink(led_t* led, uint32_t interval)
+{
+   led->task.callback =  led_blink_callback;
+   led->task.interval = interval;
+}
+
+static inline void led_task_onoff(led_t* led, bool on)
+{
+   led->task.callback =  NULL;
+   if (on)
+        led_on(led->pin);
+    else
+        led_off(led->pin);
+}
+
 // Time-of-Flight range sensor task
 typedef struct {
     Task task;
@@ -146,27 +161,39 @@ typedef struct {
     VL53L0X_RangingMeasurementData_t valid_data;
     uint32_t start_ms;
     uint32_t last_valid_ms;
+    uint16_t last_valid_measure;
     uint32_t latency;
     bool valid;
 } range_task_t;
+
+
+static inline float mcps_from_fix1616(FixPoint1616_t v) {
+    return (float)v / 65536.0f;
+}
 
 static void range_task_callback(Task* task) {
     range_task_t* rt = (range_task_t *)task;
     uint8_t new_data_ready=0;
     VL53L0X_Error status = VL53L0X_ERROR_NONE;
+    VL53L0X_RangingMeasurementData_t data;
 
     status = VL53L0X_GetMeasurementDataReady(rt->dev, &new_data_ready);
-   if ((status!=VL53L0X_ERROR_NONE)||(new_data_ready==0))
-    {
-        rt->valid = false;
+    if ((status!=VL53L0X_ERROR_NONE)||(new_data_ready==0)) {
         return;
     }
-    VL53L0X_GetRangingMeasurementData(rt->dev, &rt->valid_data);
-    uint32_t ms = millis();
-    rt->latency = ms - rt->last_valid_ms;
-    rt->last_valid_ms = ms;
-    rt->valid_data.TimeStamp = ms - rt->start_ms;
-    rt->valid = true;
+    VL53L0X_GetRangingMeasurementData(rt->dev, &data);
+    float mcps = mcps_from_fix1616(data.SignalRateRtnMegaCps);  // “Return signal rate (MCPS) … a 16.16 fix point value, which is effectively a measure of target reflectance.”
+    if (mcps < 1.0) {
+        // weak reflectance - no obstacle close enough
+        rt->valid=false;
+    } else {
+        uint32_t ms = millis();
+        rt->latency = ms - rt->last_valid_ms;
+        rt->last_valid_ms = ms;
+        rt->last_valid_measure = data.RangeMilliMeter;
+        rt->valid = true;
+
+    }
     VL53L0X_ClearInterruptMask(rt->dev, VL53L0X_REG_SYSTEM_INTERRUPT_GPIO_NEW_SAMPLE_READY);
 
 }
@@ -176,16 +203,22 @@ typedef struct
     Task task;
     uint32_t prev_range_time_stamp;
     range_task_t *range;
+    uint32_t secs;
 } print_task_t;
 
 
 static void printDistance_callback(Task* task) {
     print_task_t* ps = (print_task_t *)task;
-    VL53L0X_RangingMeasurementData_t *data = &ps->range->valid_data;
-
-    if (ps->prev_range_time_stamp != data->TimeStamp) {
-        printf("[%d ms]: latency=%d ms, D=%d mm\n", data->TimeStamp, ps->range->latency, data->RangeMilliMeter);
-        ps->prev_range_time_stamp = data->TimeStamp;
+    ps->secs++;
+    if  (ps->range->last_valid_ms == ps->prev_range_time_stamp && !ps->range->valid)
+    {
+        printf("[%d]. Weak signal\n", ps->secs);
+        return;
+    }
+    if (ps->prev_range_time_stamp != ps->range->last_valid_ms)
+    {
+        printf("[%d ms], D=%d mm\n", ps->range->last_valid_ms, ps->range->last_valid_measure);
+        ps->prev_range_time_stamp = ps->range->last_valid_ms;
     }
 }
 
@@ -193,23 +226,34 @@ typedef struct
 {
     Task task;
     led_t *red_led;
+    led_t *green_led;
     uint32_t previous_ts;
     range_task_t *range;
 } manager_task_t;
 
 static inline uint32_t range_to_interval_ms(uint32_t range_mm) {
-    if (range_mm < 30) range_mm = 30;
-    if (range_mm > 3000) range_mm = 3000;
-    return 50 + (uint32_t)((uint64_t)(range_mm - 30) * (2000 - 50) / (3000 - 30));
+    const int min_mm = 20;
+    const int max_mm = 2500;
+    const int min_ms = 50;
+    const int max_ms = 2300;
+    if (range_mm < min_mm) range_mm = min_mm;
+    if (range_mm > max_mm) range_mm = max_mm;
+    return min_ms + (uint32_t)((uint64_t)(range_mm - min_mm) * (max_ms - min_ms) / (max_mm - min_mm));
 }
 
 static void manager_callback(Task* task) {
     manager_task_t* mngr = (manager_task_t *)task;
-    VL53L0X_RangingMeasurementData_t *data = &mngr->range->valid_data;
 
-    if (data->TimeStamp != mngr->previous_ts) {
-        mngr->previous_ts = data->TimeStamp;
-        mngr->red_led->task.interval = range_to_interval_ms(data->RangeMilliMeter);
+    if (mngr->range->valid)
+    {
+        uint32_t interval = range_to_interval_ms(mngr->range->last_valid_measure);
+        led_task_blink(mngr->red_led, interval);
+        led_task_onoff(mngr->green_led, true);
+    }
+    else
+    {
+        led_task_onoff(mngr->red_led, true);
+        led_task_onoff(mngr->green_led, false);
     }
 }
 
@@ -223,9 +267,9 @@ int main()
     hard_assert(rc == PICO_OK);
 
     led_t led1;
-    init_led_task(&led1, LED_GREEN, 500, led_callback);
+    init_led_task(&led1, LED_GREEN, 500, NULL);
     led_t led2;
-    init_led_task(&led2, LED_RED, 5000, led_callback);
+    init_led_task(&led2, LED_RED, 500, NULL);
     TaskList_Add(&ActiveTasksList, (Task *)&led1);
     TaskList_Add(&ActiveTasksList, (Task *)&led2);
 
@@ -314,18 +358,23 @@ int main()
     rangeTask.dev = ptof;
     rangeTask.start_ms = millis();
     rangeTask.latency = 0;
-    rangeTask.valid_data.TimeStamp = 0;
+    rangeTask.last_valid_ms = 0;
+    rangeTask.last_valid_measure = 0;
     TaskList_Add(&ActiveTasksList, (Task *)&rangeTask);
 
     print_task_t printDistance;
     printDistance.task.callback = printDistance_callback;
     printDistance.task.interval = 1000;
     printDistance.range = &rangeTask;
+    printDistance.prev_range_time_stamp = 0;
+    printDistance.secs = 0;
     TaskList_Add(&ActiveTasksList, (Task *)&printDistance);
 
     manager_task_t managerTask;
     managerTask.range = &rangeTask;
     managerTask.red_led = &led2;
+    managerTask.green_led = &led1;
+
     managerTask.task.callback = manager_callback;
     managerTask.task.interval = 0;
     managerTask.previous_ts = 0;
