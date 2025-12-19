@@ -6,6 +6,7 @@
 #include "vl53l0x_platform.h"
 #include "vl53l0x_i2c_platform.h"
 #include "async_task.h"
+#include "led_lib.h"
 
 // Details of time-of-flight ranging sensor VL53L0X and its API are from https://www.st.com/en/imaging-and-photonics-solutions/vl53l0x.html
 // Details of carrier/breakout board from Pololu: https://www.pololu.com/product/2490
@@ -87,26 +88,8 @@ VL53L0X_Error WaitMeasurementDataReady(VL53L0X_DEV Dev) {
 }
 #endif
 
-#define LED_1   (7)
-#define LED_2   (8)
-#define LED_RED     (LED_1)
-#define LED_GREEN   (LED_2)
-
-int all_leds[] = {LED_1, LED_2};
-
-int pico_leds_init()
-{
-    int n = sizeof(all_leds)/sizeof(int);
-    for (int i=0; i<n; i++)
-    {
-        gpio_init(all_leds[i]);
-        gpio_set_dir(all_leds[i], GPIO_OUT);
-    }
-    return PICO_OK;
-}
-
-#define led_on(pin)  do { gpio_put((pin), true); } while (0)
-#define led_off(pin) do { gpio_put((pin), false); } while (0)
+#define LED_RED     (7)
+#define LED_GREEN   (8)
 
 TaskList ActiveTasksList;
 
@@ -114,38 +97,27 @@ typedef struct
 {
     Task task;
     int pin;
-    bool state;
-} led_t;
+} led_task_t;
 
 static void led_blink_callback(Task* task) {
-    // Your code here - runs every task->interval;
-    // To change behavior:
-    // task->callback = another_callback;
-    // To change interval:
-    // task->interval = 2000;
-    led_t *d = (led_t *)task;
-    d->state = !d->state;
-    if (d->state)
-        led_on(d->pin);
-    else
-        led_off(d->pin);
+    led_task_t *d = (led_task_t *)task;
+    led_flip(d->pin);
 }
 
-static void init_led_task(led_t* led, uint32_t pin, uint32_t interval, TaskCallback callbk)
+static void init_led_task(led_task_t* led, uint32_t pin, uint32_t interval, TaskCallback callbk)
 {
     led->task.callback = callbk;
     led->task.interval = interval;
     led->pin = pin;
-    led->state = false;
 }
 
-static inline void led_task_blink(led_t* led, uint32_t interval)
+static inline void led_task_blink(led_task_t* led, uint32_t interval)
 {
    led->task.callback =  led_blink_callback;
    led->task.interval = interval;
 }
 
-static inline void led_task_onoff(led_t* led, bool on)
+static inline void led_task_onoff(led_task_t* led, bool on)
 {
    led->task.callback =  NULL;
    if (on)
@@ -225,8 +197,8 @@ static void printDistance_callback(Task* task) {
 typedef struct
 {
     Task task;
-    led_t *red_led;
-    led_t *green_led;
+    led_task_t *red_led;
+    led_task_t *green_led;
     uint32_t previous_ts;
     range_task_t *range;
 } manager_task_t;
@@ -263,12 +235,12 @@ int main()
 
     TaskList_Init(&ActiveTasksList);
 
-    rc = pico_leds_init();
-    hard_assert(rc == PICO_OK);
+    led_off(LED_GREEN);
+    led_off(LED_RED);
+    led_task_t led1;
+    led_task_t led2;
 
-    led_t led1;
     init_led_task(&led1, LED_GREEN, 500, NULL);
-    led_t led2;
     init_led_task(&led2, LED_RED, 500, NULL);
     TaskList_Add(&ActiveTasksList, (Task *)&led1);
     TaskList_Add(&ActiveTasksList, (Task *)&led2);
