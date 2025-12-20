@@ -5,8 +5,6 @@
 #include "vl53l0x_api.h"
 #include "vl53l0x_platform.h"
 #include "vl53l0x_i2c_platform.h"
-#include "async_task.h"
-#include "led_lib.h"
 
 // Details of time-of-flight ranging sensor VL53L0X and its API are from https://www.st.com/en/imaging-and-photonics-solutions/vl53l0x.html
 // Details of carrier/breakout board from Pololu: https://www.pololu.com/product/2490
@@ -90,14 +88,6 @@ VL53L0X_Error WaitMeasurementDataReady(VL53L0X_DEV Dev) {
 
 #define LED_RED     (7)
 #define LED_GREEN   (8)
-
-TaskList ActiveTasksList;
-
-typedef struct
-{
-    Task task;
-    int pin;
-} led_task_t;
 
 static void led_blink_callback(Task* task) {
     led_task_t *d = (led_task_t *)task;
@@ -232,18 +222,13 @@ static void manager_callback(Task* task) {
 int main()
 {
     int rc = 0;
-
-    TaskList_Init(&ActiveTasksList);
-
     led_off(LED_GREEN);
     led_off(LED_RED);
-    led_task_t led1;
-    led_task_t led2;
+    Task *led_green_task  = task_add();
+    Task *led_red_task = task_add();
 
-    init_led_task(&led1, LED_GREEN, 500, NULL);
-    init_led_task(&led2, LED_RED, 500, NULL);
-    TaskList_Add(&ActiveTasksList, (Task *)&led1);
-    TaskList_Add(&ActiveTasksList, (Task *)&led2);
+    led_green_task->user.data[0] = LED_GREEN;
+    led_red_task->user.data[0] = LED_RED;
 
     VL53L0X_Dev_t *ptof = &tofDev;
     VL53L0X_Error tof_status = VL53L0X_ERROR_NONE;
